@@ -96,7 +96,10 @@ async def login(data: LoginRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Credenciales inválidas")
+        except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Login error: {type(e).__name__}: {str(e)}")
+        raise HTTPException(status_code=401, detail=f"Error: {type(e).__name__}: {str(e)}")
 
 
 @router.post("/logout")
