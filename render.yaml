@@ -1,0 +1,44 @@
+# Configuración para desplegar en Render.com
+# Hacer push del backend/ a un repo de GitHub, luego en Render:
+# 1. New > Web Service
+# 2. Conectar el repo
+# 3. Root Directory: backend
+# 4. Build Command: pip install -r requirements.txt
+# 5. Start Command: uvicorn main:app --host 0.0.0.0 --port $PORT
+# 6. Plan: Free
+# 7. En "Environment Variables" agregar:
+#    - SUPABASE_URL
+#    - SUPABASE_KEY
+#    - SUPABASE_ANON_KEY
+#    - DATABASE_URL
+#    - JWT_SECRET
+#    - ALLOWED_ORIGINS (la URL de tu Netlify)
+
+services:
+  - type: web
+    name: helpdesk-it-backend
+    env: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: info
+      # Las siguientes las completás manualmente en el dashboard:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ALLOWED_ORIGINS
+        sync: false
