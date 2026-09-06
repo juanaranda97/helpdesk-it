@@ -125,13 +125,14 @@ AssistanceType = Literal["remoto", "presencial", "telefonico", "whatsapp"]
 
 class TicketCreate(BaseModel):
     title: str = Field(min_length=3, max_length=200)
-    description: str = Field(min_length=10, max_length=2000)
+    description: Optional[str] = Field(default=None, max_length=2000)
     category_id: int
     priority: PriorityType = "media"
     location_id: Optional[int] = None
     location: Optional[str] = None
     assistance_type: AssistanceType = "remoto"
     requester_phone: Optional[str] = None
+    requester_ci: Optional[str] = None
     
     # Datos automáticos
     gps_latitude: Optional[float] = None
@@ -181,6 +182,7 @@ class TicketResponse(BaseModel):
     requester_name: str
     requester_email: Optional[str] = None
     requester_phone: Optional[str] = None
+    requester_ci: Optional[str] = None
     requester_department: Optional[str] = None
     location: Optional[str] = None
     
@@ -221,6 +223,7 @@ class TicketListItem(BaseModel):
     ticket_number: int
     title: str
     requester_name: str
+    requester_ci: Optional[str] = None
     status: str
     priority: str
     sla_status: Optional[str] = None
