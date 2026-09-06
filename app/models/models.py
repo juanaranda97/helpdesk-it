@@ -3,7 +3,7 @@ from datetime import datetime
 from uuid import uuid4
 from sqlalchemy import (
     Column, String, Integer, Boolean, DateTime, Date, Text,
-    ForeignKey, Numeric, JSON, CheckConstraint
+    ForeignKey, Numeric, JSON, CheckConstraint, text
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -76,7 +76,7 @@ class Ticket(Base):
     __tablename__ = "tickets"
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    ticket_number = Column(Integer, unique=True, autoincrement=True)
+    ticket_number = Column(Integer, unique=True, server_default=text("nextval('tickets_ticket_number_seq')"))
     title = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     
