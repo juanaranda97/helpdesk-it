@@ -46,6 +46,7 @@ def create_ticket(
         requester_name=requester["full_name"],
         requester_email=requester.get("email"),
         requester_phone=data.requester_phone or requester.get("phone"),
+        requester_ci=data.requester_ci or requester.get("ci"),
         requester_department=requester.get("department"),
         
         # GPS
@@ -191,8 +192,11 @@ def list_user_tickets(
     limit: int = 100,
     offset: int = 0
 ) -> List[Ticket]:
-    """Lista los tickets de un usuario."""
-    query = db.query(Ticket).filter(Ticket.requester_id == user_id)
+    """Lista los tickets del usuario: los que creó Y los que tiene asignados (técnico)."""
+    query = db.query(Ticket).filter(or_(
+        Ticket.requester_id == user_id,
+        Ticket.assigned_to == user_id
+    ))
     
     if search:
         query = query.filter(or_(
