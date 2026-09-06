@@ -172,8 +172,8 @@ class TicketResponse(BaseModel):
     id: UUID
     ticket_number: int
     title: str
-    description: str
-    
+    description: Optional[str] = None
+
     requester_id: UUID
     assigned_to: Optional[UUID] = None
     category_id: Optional[int] = None
