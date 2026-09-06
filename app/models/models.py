@@ -78,7 +78,7 @@ class Ticket(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     ticket_number = Column(Integer, unique=True, autoincrement=True)
     title = Column(String, nullable=False)
-    description = Column(Text, nullable=False)
+    description = Column(Text, nullable=True)
     
     # Relaciones
     requester_id = Column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=False)
@@ -90,6 +90,7 @@ class Ticket(Base):
     requester_name = Column(String, nullable=False)
     requester_email = Column(String)
     requester_phone = Column(String)
+    requester_ci = Column(String)
     requester_department = Column(String)
     location = Column(String)
     
