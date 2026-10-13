@@ -10,6 +10,10 @@ from app.models.models import (
     ActivityLog,
     Notification,
     SatisfactionSurvey,
+    Equipment,
+    EquipmentAssignment,
+    Branch,
+    PhysicalLocation,
 )
 
 __all__ = [
@@ -23,4 +27,8 @@ __all__ = [
     "ActivityLog",
     "Notification",
     "SatisfactionSurvey",
+    "Equipment",
+    "EquipmentAssignment",
+    "Branch",
+    "PhysicalLocation",
 ]

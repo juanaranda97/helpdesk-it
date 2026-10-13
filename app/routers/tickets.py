@@ -1,12 +1,16 @@
-"""Router de tickets - CRUD completo."""
+"""Router de tickets — CRUD completo con aislamiento multi-tenant.
+
+Todos los endpoints resuelven el tenant en backend (get_scoped_tenancy) y
+validan el acceso por organización antes de cualquier lógica funcional.
+"""
 from typing import List, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File, Form
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.security import get_current_user, require_tech
-from app.core.supabase_client import supabase_admin
+from app.core.tenancy import get_scoped_tenancy, TenancyContext
+from app.core import permissions
 from app.models import Ticket, TicketAttachment, TicketComment, SatisfactionSurvey
 from app.schemas.schemas import (
     TicketCreate, TicketUpdate, TicketClose, TicketResponse, TicketListItem,
@@ -14,9 +18,36 @@ from app.schemas.schemas import (
     SurveyCreate, SurveyResponse, DashboardStats
 )
 from app.services import tickets as ticket_service
+from app.services.tickets import assert_ticket_access
 from app.services.storage import upload_file_to_storage
 
 router = APIRouter(prefix="/tickets", tags=["Tickets"])
+
+
+def require_ticket_staff(ctx: TenancyContext = Depends(get_scoped_tenancy)) -> TenancyContext:
+    """Contexto + exige rol de staff de tickets (técnico y superiores)."""
+    if not permissions.can_staff_tickets(ctx.role):
+        raise HTTPException(status_code=403, detail="Requiere permisos de técnico o superior")
+    return ctx
+
+
+def _get_ticket_or_404(db: Session, ticket_id: UUID, ctx: TenancyContext) -> Ticket:
+    """Trae el ticket y corta 404 si no existe o es de otra organización."""
+    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket no encontrado")
+    assert_ticket_access(ticket, ctx)   # 404 si cross-tenant
+    return ticket
+
+
+def _require_ticket_access(db: Session, ticket_id: UUID, ctx: TenancyContext) -> Ticket:
+    """Tenant (404) + permiso funcional (403): solicitante, técnico asignado o staff.
+    Misma regla que GET /tickets/{id}, reutilizada por comentarios y adjuntos."""
+    ticket = _get_ticket_or_404(db, ticket_id, ctx)
+    uid = UUID(ctx.user_id)
+    if ticket.requester_id != uid and ticket.assigned_to != uid and not permissions.can_staff_tickets(ctx.role):
+        raise HTTPException(status_code=403, detail="Sin permiso para este ticket")
+    return ticket
 
 
 # ============================================================
@@ -25,20 +56,23 @@ router = APIRouter(prefix="/tickets", tags=["Tickets"])
 @router.get("/stats/me", response_model=DashboardStats)
 async def my_stats(
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    ctx: TenancyContext = Depends(get_scoped_tenancy),
 ):
-    """Estadísticas del usuario actual."""
-    stats = ticket_service.get_dashboard_stats(db, user_id=UUID(current_user["id"]))
+    stats = ticket_service.get_dashboard_stats(
+        db, user_id=UUID(ctx.user_id),
+        scope_org_id=ctx.scope_org_id, scope_company_id=ctx.scope_company_id,
+    )
     return DashboardStats(**stats)
 
 
 @router.get("/stats/all", response_model=DashboardStats)
 async def all_stats(
     db: Session = Depends(get_db),
-    _: dict = Depends(require_tech)
+    ctx: TenancyContext = Depends(require_ticket_staff),
 ):
-    """Estadísticas globales (tech+)."""
-    stats = ticket_service.get_dashboard_stats(db)
+    stats = ticket_service.get_dashboard_stats(
+        db, scope_org_id=ctx.scope_org_id, scope_company_id=ctx.scope_company_id
+    )
     return DashboardStats(**stats)
 
 
@@ -50,11 +84,15 @@ async def create_ticket(
     data: TicketCreate,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    ctx: TenancyContext = Depends(get_scoped_tenancy),
 ):
-    """Crea un ticket nuevo."""
+    """Crea un ticket. El tenant se resuelve y valida en backend."""
     ip = request.client.host if request.client else None
-    ticket = ticket_service.create_ticket(db, data, current_user, ip)
+    org_id, company_id = ctx.tenant_for_create()
+    ticket = ticket_service.create_ticket(
+        db, data, ctx.user,
+        organization_id=org_id, company_id=company_id, ip_address=ip,
+    )
     return ticket
 
 
@@ -66,11 +104,12 @@ async def my_tickets(
     limit: int = Query(100, le=500),
     offset: int = 0,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    ctx: TenancyContext = Depends(get_scoped_tenancy),
 ):
-    """Lista los tickets del usuario actual."""
-    user_id = UUID(current_user["id"])
-    return ticket_service.list_user_tickets(db, user_id, search, status, priority, limit, offset)
+    return ticket_service.list_user_tickets(
+        db, UUID(ctx.user_id), search, status, priority, limit, offset,
+        scope_org_id=ctx.scope_org_id, scope_company_id=ctx.scope_company_id,
+    )
 
 
 @router.get("/all", response_model=List[TicketListItem])
@@ -83,11 +122,11 @@ async def all_tickets(
     limit: int = Query(100, le=500),
     offset: int = 0,
     db: Session = Depends(get_db),
-    _: dict = Depends(require_tech)
+    ctx: TenancyContext = Depends(require_ticket_staff),
 ):
-    """Lista todos los tickets (tech+)."""
     return ticket_service.list_all_tickets(
-        db, search, status, priority, assigned_to, sla_status, limit, offset
+        db, search, status, priority, assigned_to, sla_status, limit, offset,
+        scope_org_id=ctx.scope_org_id, scope_company_id=ctx.scope_company_id,
     )
 
 
@@ -95,22 +134,9 @@ async def all_tickets(
 async def get_ticket(
     ticket_id: UUID,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    ctx: TenancyContext = Depends(get_scoped_tenancy),
 ):
-    """Obtiene un ticket específico."""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket no encontrado")
-    
-    # Validar permisos
-    user_id = UUID(current_user["id"])
-    user_role = current_user.get("role", "usuario")
-    
-    if ticket.requester_id != user_id and ticket.assigned_to != user_id and \
-       user_role not in ("admin", "supervisor", "tecnico"):
-        raise HTTPException(status_code=403, detail="Sin permiso para ver este ticket")
-    
-    return ticket
+    return _require_ticket_access(db, ticket_id, ctx)
 
 
 @router.patch("/{ticket_id}", response_model=TicketResponse)
@@ -118,10 +144,10 @@ async def update_ticket(
     ticket_id: UUID,
     data: TicketUpdate,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    ctx: TenancyContext = Depends(get_scoped_tenancy),
 ):
-    """Actualiza un ticket."""
-    return ticket_service.update_ticket(db, ticket_id, data, current_user)
+    # El service valida tenant (404) + permisos funcionales.
+    return ticket_service.update_ticket(db, ticket_id, data, ctx.user, ctx=ctx)
 
 
 @router.post("/{ticket_id}/close", response_model=TicketResponse)
@@ -129,21 +155,21 @@ async def close_ticket(
     ticket_id: UUID,
     data: TicketClose,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(require_tech)
+    ctx: TenancyContext = Depends(require_ticket_staff),
 ):
-    """Cierra un ticket con firma digital del técnico."""
     return ticket_service.close_ticket_with_signature(
         db, ticket_id,
         signature_base64=data.technician_signature,
         resolution_notes=data.resolution_notes,
         actual_hours=float(data.actual_hours) if data.actual_hours else None,
         cost=float(data.cost) if data.cost else None,
-        technician=current_user
+        technician=ctx.user,
+        ctx=ctx,
     )
 
 
 # ============================================================
-# ATTACHMENTS (fotos, videos, audios)
+# ATTACHMENTS
 # ============================================================
 @router.post("/{ticket_id}/attachments", response_model=AttachmentResponse, status_code=201)
 async def upload_attachment(
@@ -151,22 +177,15 @@ async def upload_attachment(
     file: UploadFile = File(...),
     duration_seconds: Optional[int] = Form(None),
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    ctx: TenancyContext = Depends(get_scoped_tenancy),
 ):
-    """Sube un archivo (foto/video/audio) al ticket."""
-    
-    # Validar acceso al ticket
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket no encontrado")
-    
-    # Subir a storage
-    metadata = await upload_file_to_storage(file, str(ticket_id), current_user["id"])
-    
-    # Guardar en DB
+    ticket = _require_ticket_access(db, ticket_id, ctx)
+    metadata = await upload_file_to_storage(file, str(ticket_id), ctx.user_id)
     attachment = TicketAttachment(
         ticket_id=ticket_id,
-        uploaded_by=UUID(current_user["id"]),
+        organization_id=ticket.organization_id,
+        company_id=ticket.company_id,
+        uploaded_by=UUID(ctx.user_id),
         file_name=metadata["file_name"],
         file_url=metadata["file_url"],
         file_size=metadata["file_size"],
@@ -177,7 +196,6 @@ async def upload_attachment(
     db.add(attachment)
     db.commit()
     db.refresh(attachment)
-    
     return attachment
 
 
@@ -185,9 +203,9 @@ async def upload_attachment(
 async def list_attachments(
     ticket_id: UUID,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    ctx: TenancyContext = Depends(get_scoped_tenancy),
 ):
-    """Lista archivos adjuntos de un ticket."""
+    _require_ticket_access(db, ticket_id, ctx)
     return db.query(TicketAttachment).filter(
         TicketAttachment.ticket_id == ticket_id
     ).order_by(TicketAttachment.created_at.desc()).all()
@@ -201,14 +219,19 @@ async def add_comment(
     ticket_id: UUID,
     data: CommentCreate,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    ctx: TenancyContext = Depends(get_scoped_tenancy),
 ):
-    """Agrega un comentario al ticket."""
+    ticket = _require_ticket_access(db, ticket_id, ctx)
+    # Un usuario sin rol de staff NO puede crear comentarios internos.
+    if data.is_internal and not permissions.can_staff_tickets(ctx.role):
+        raise HTTPException(status_code=403, detail="No tenés permiso para crear comentarios internos")
     comment = TicketComment(
         ticket_id=ticket_id,
-        user_id=UUID(current_user["id"]),
-        user_name=current_user["full_name"],
-        user_role=current_user.get("role", "usuario"),
+        organization_id=ticket.organization_id,
+        company_id=ticket.company_id,
+        user_id=UUID(ctx.user_id),
+        user_name=ctx.user["full_name"],
+        user_role=ctx.role,
         comment=data.comment,
         is_internal=data.is_internal,
     )
@@ -222,16 +245,13 @@ async def add_comment(
 async def list_comments(
     ticket_id: UUID,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    ctx: TenancyContext = Depends(get_scoped_tenancy),
 ):
-    """Lista comentarios de un ticket."""
-    user_role = current_user.get("role", "usuario")
+    _require_ticket_access(db, ticket_id, ctx)
     query = db.query(TicketComment).filter(TicketComment.ticket_id == ticket_id)
-    
-    # Usuarios normales no ven comentarios internos
-    if user_role == "usuario":
-        query = query.filter(TicketComment.is_internal == False)
-    
+    # Usuarios sin rol de staff no ven comentarios internos.
+    if not permissions.can_staff_tickets(ctx.role):
+        query = query.filter(TicketComment.is_internal == False)  # noqa: E712
     return query.order_by(TicketComment.created_at).all()
 
 
@@ -243,31 +263,24 @@ async def submit_survey(
     ticket_id: UUID,
     data: SurveyCreate,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    ctx: TenancyContext = Depends(get_scoped_tenancy),
 ):
-    """Solicitante envía encuesta de satisfacción."""
-    
-    # Verificar que el ticket existe y es del usuario
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket no encontrado")
-    
-    if ticket.requester_id != UUID(current_user["id"]):
+    ticket = _get_ticket_or_404(db, ticket_id, ctx)
+
+    if ticket.requester_id != UUID(ctx.user_id):
         raise HTTPException(status_code=403, detail="Solo el solicitante puede calificar")
-    
     if ticket.status != "completada":
         raise HTTPException(status_code=400, detail="Solo se puede calificar tickets completados")
-    
-    # Verificar si ya hay encuesta
+
     existing = db.query(SatisfactionSurvey).filter(
         SatisfactionSurvey.ticket_id == ticket_id
     ).first()
     if existing:
         raise HTTPException(status_code=400, detail="Ya enviaste una encuesta para este ticket")
-    
+
     survey = SatisfactionSurvey(
         ticket_id=ticket_id,
-        user_id=UUID(current_user["id"]),
+        user_id=UUID(ctx.user_id),
         rating=data.rating,
         speed_rating=data.speed_rating,
         quality_rating=data.quality_rating,
@@ -276,12 +289,9 @@ async def submit_survey(
         would_recommend=data.would_recommend,
     )
     db.add(survey)
-    
-    # Actualizar el ticket también
     ticket.satisfaction_rating = data.rating
     ticket.satisfaction_comment = data.comment
     ticket.satisfaction_submitted_at = survey.created_at
-    
     db.commit()
     db.refresh(survey)
     return survey

@@ -22,6 +22,7 @@ from app.routers.catalogs import (
 # Routers nuevos (multi-tenant)
 from app.routers.organizations import router as organizations_router
 from app.routers.companies import router as companies_router
+from app.routers.inventory import router as inventory_router
 
 
 # Logging
@@ -113,6 +114,7 @@ async def health():
 # --- Nuevos multi-tenant ---
 app.include_router(organizations_router)
 app.include_router(companies_router)
+app.include_router(inventory_router)
 
 # --- Existentes ---
 app.include_router(auth_router)

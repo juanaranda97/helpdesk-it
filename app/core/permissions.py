@@ -129,3 +129,17 @@ def role_priority(role: str) -> int:
 def can_assign_role(actor_role: str, target_role: str) -> bool:
     """Un usuario solo puede asignar roles de menor o igual jerarquía que el suyo."""
     return role_priority(actor_role) >= role_priority(target_role)
+
+
+def can_staff_tickets(role: str) -> bool:
+    """
+    ¿Puede operar sobre tickets de toda su organización (no solo los propios)?
+    Técnico y superiores. Reemplaza a los chequeos legacy hardcodeados
+    (p.ej. role in ("admin","supervisor","tecnico")) por la jerarquía real.
+    """
+    return role_priority(role) >= role_priority(Role.TECNICO.value)
+
+
+def can_assign_tickets(role: str) -> bool:
+    """¿Puede asignar/reasignar el técnico de un ticket? Supervisor y superiores."""
+    return role_priority(role) >= role_priority(Role.SUPERVISOR.value)

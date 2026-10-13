@@ -27,6 +27,10 @@ class Profile(Base):
     avatar_url = Column(String)
     signature_url = Column(String)
     is_active = Column(Boolean, default=True)
+    # Tenancy (columnas YA existentes en la DB; se mapean para validar que un
+    # usuario pertenezca a una org/empresa — p.ej. al asignar un activo).
+    organization_id = Column(UUID(as_uuid=True))
+    company_id = Column(UUID(as_uuid=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -80,6 +84,12 @@ class Ticket(Base):
     title = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     
+    # Tenancy (columnas YA existentes en PostgreSQL; la FK vive en la DB,
+    # no se declara aquí para no requerir modelos ORM de organizations/companies
+    # ni emitir DDL. NO se crean columnas nuevas ni migraciones.)
+    organization_id = Column(UUID(as_uuid=True))
+    company_id = Column(UUID(as_uuid=True))
+
     # Relaciones
     requester_id = Column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=False)
     assigned_to = Column(UUID(as_uuid=True), ForeignKey("profiles.id"))
@@ -157,6 +167,9 @@ class TicketAttachment(Base):
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     ticket_id = Column(UUID(as_uuid=True), ForeignKey("tickets.id", ondelete="CASCADE"), nullable=False)
+    # Tenancy (columnas YA existentes en la DB; se heredan del ticket padre)
+    organization_id = Column(UUID(as_uuid=True))
+    company_id = Column(UUID(as_uuid=True))
     uploaded_by = Column(UUID(as_uuid=True), ForeignKey("profiles.id"))
     file_name = Column(String, nullable=False)
     file_url = Column(Text, nullable=False)
@@ -176,6 +189,9 @@ class TicketComment(Base):
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     ticket_id = Column(UUID(as_uuid=True), ForeignKey("tickets.id", ondelete="CASCADE"), nullable=False)
+    # Tenancy (columnas YA existentes en la DB; se heredan del ticket padre)
+    organization_id = Column(UUID(as_uuid=True))
+    company_id = Column(UUID(as_uuid=True))
     user_id = Column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=False)
     user_name = Column(String, nullable=False)
     user_role = Column(String)
@@ -231,3 +247,109 @@ class SatisfactionSurvey(Base):
     comment = Column(Text)
     would_recommend = Column(Boolean)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# ============================================================
+# INVENTARIO (ITAM) — tablas YA existentes en Supabase
+# Se mapean las columnas reales. Las FK a organizations/companies/branches/
+# physical_locations viven en la DB; aquí se declaran como UUID planos para no
+# requerir modelos ORM de esas tablas (no se emite DDL). NO se crean columnas.
+# ============================================================
+class Equipment(Base):
+    """Activo de inventario (equipment)."""
+    __tablename__ = "equipment"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    codigo_interno = Column(Text, unique=True)      # asset tag interno (ÚNICO en DB)
+    tipo = Column(Text, nullable=False)
+    marca = Column(Text)
+    modelo = Column(Text)
+    serial = Column(Text)
+    nro_producto = Column(Text)
+
+    # Fechas
+    fecha_fabricacion = Column(Date)
+    fecha_compra = Column(Date)
+    fecha_garantia_hasta = Column(Date)
+
+    # Especificaciones técnicas
+    procesador = Column(Text)
+    ram = Column(Text)
+    tipo_ram = Column(Text)
+    drive = Column(Text)
+    tipo_drive = Column(Text)
+    marca_drive = Column(Text)
+    sistema_operativo = Column(Text)
+    version_so = Column(Text)
+    so_instalado_el = Column(Date)
+    antivirus = Column(Text)
+    antivirus_version = Column(Text)
+    antivirus_fecha = Column(Date)
+    onedrive_estado = Column(Text)
+    monitor_marca = Column(Text)
+    monitor_tamano = Column(Text)
+    mouse_modelo = Column(Text)
+    tiene_auricular = Column(Boolean, default=False)
+    anydesk_id = Column(Text)
+
+    # Estado y ubicación
+    estado = Column(Text, nullable=False, default="disponible")
+    ubicacion = Column(Text)
+    notas = Column(Text)
+
+    # Metadata / tenancy
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by = Column(UUID(as_uuid=True))
+    branch_id = Column(UUID(as_uuid=True))
+    physical_location_id = Column(UUID(as_uuid=True))
+    organization_id = Column(UUID(as_uuid=True))
+    company_id = Column(UUID(as_uuid=True))
+
+    assignments = relationship(
+        "EquipmentAssignment",
+        back_populates="equipment",
+    )
+
+
+class EquipmentAssignment(Base):
+    """Asignación/devolución de un activo a un usuario (equipment_assignments)."""
+    __tablename__ = "equipment_assignments"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    equipment_id = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), nullable=False)   # FK a profiles.id en la DB
+    assigned_at = Column(DateTime(timezone=True), server_default=func.now())
+    returned_at = Column(DateTime(timezone=True))          # NULL = asignación activa
+    assigned_by = Column(UUID(as_uuid=True))
+    returned_reason = Column(Text)
+    notas = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    organization_id = Column(UUID(as_uuid=True))
+    company_id = Column(UUID(as_uuid=True))
+
+    equipment = relationship("Equipment", back_populates="assignments")
+
+
+class Branch(Base):
+    """Sucursal (branches). Modelo mínimo de SOLO LECTURA para validar tenant.
+    Las columnas reales son más; aquí solo las necesarias para aislamiento."""
+    __tablename__ = "branches"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    name = Column(Text)
+    is_active = Column(Boolean, default=True)
+    organization_id = Column(UUID(as_uuid=True))
+    company_id = Column(UUID(as_uuid=True))
+
+
+class PhysicalLocation(Base):
+    """Ubicación física (physical_locations). Modelo mínimo SOLO LECTURA."""
+    __tablename__ = "physical_locations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    branch_id = Column(UUID(as_uuid=True))
+    name = Column(Text)
+    is_active = Column(Boolean, default=True)
+    organization_id = Column(UUID(as_uuid=True))
+    company_id = Column(UUID(as_uuid=True))
