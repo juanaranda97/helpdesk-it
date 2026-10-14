@@ -131,6 +131,16 @@ def can_assign_role(actor_role: str, target_role: str) -> bool:
     return role_priority(actor_role) >= role_priority(target_role)
 
 
+def is_company_scoped_role(role: str) -> bool:
+    """¿El alcance del rol se LIMITA a su empresa (si la tiene)?
+
+    True para company_admin, manager, supervisor, tecnico, rrhh, usuario
+    (roles sub-organización). False para org_admin/org_owner/admin y plataforma,
+    que conservan alcance multiempresa / global autorizado.
+    """
+    return role not in (ORG_ADMIN_ROLES | PLATFORM_ROLES)
+
+
 def can_staff_tickets(role: str) -> bool:
     """
     ¿Puede operar sobre tickets de toda su organización (no solo los propios)?

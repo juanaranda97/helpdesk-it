@@ -14,6 +14,9 @@ from app.models.models import (
     EquipmentAssignment,
     Branch,
     PhysicalLocation,
+    Organization,
+    Company,
+    Department,
 )
 
 __all__ = [
@@ -31,4 +34,7 @@ __all__ = [
     "EquipmentAssignment",
     "Branch",
     "PhysicalLocation",
+    "Organization",
+    "Company",
+    "Department",
 ]

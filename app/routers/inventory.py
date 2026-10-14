@@ -17,7 +17,7 @@ from app.core import permissions
 from app.schemas.inventory import (
     EquipmentCreate, EquipmentUpdate, EquipmentResponse, EquipmentListItem,
     AssignmentCreate, AssignmentReturn, AssignmentResponse,
-    InventoryStats, InventoryMeta, AssignableUser,
+    InventoryStats, InventoryMeta, AssignableUser, TenantOption,
 )
 from app.services import inventory as inv
 
@@ -25,9 +25,17 @@ router = APIRouter(prefix="/inventory", tags=["Inventario"])
 
 
 def require_asset_ctx(ctx: TenancyContext = Depends(get_scoped_tenancy)) -> TenancyContext:
-    """Contexto de tenancy + exige rol de gestión de activos."""
+    """Contexto de tenancy + exige rol de gestión de activos.
+
+    Además aplica FAIL-CLOSED de empresa de forma CENTRALIZADA: un rol sub-organización
+    sin empresa asignada no puede operar sobre Inventario (403). Al estar acá, TODOS los
+    endpoints actuales y futuros del módulo quedan protegidos (incluido GET /inventory/meta).
+    Las verificaciones de los servicios se conservan como defensa en profundidad.
+    org_admin/org_owner y plataforma conservan su alcance multiempresa/global.
+    """
     if not permissions.can_manage_assets(ctx.role):
         raise HTTPException(status_code=403, detail="Requiere permisos de gestión de activos")
+    ctx.assert_company_scope()
     return ctx
 
 
@@ -52,12 +60,41 @@ async def inventory_meta(
 
 @router.get("/assignable-users", response_model=List[AssignableUser])
 async def assignable_users(
+    company_id: Optional[UUID] = None,
+    search: Optional[str] = None,
     db: Session = Depends(get_db),
     ctx: TenancyContext = Depends(require_asset_ctx),
 ):
-    """Usuarios elegibles para asignar un activo — SOLO de la org/empresa activa.
-    (Se registra antes de /{equipment_id} para no ser capturado por el path param.)"""
-    return inv.list_assignable_users(db, ctx)
+    """Usuarios elegibles para asignar un activo — de la empresa seleccionada
+    (validada) o del scope; activos, no dados de baja/suspendidos; con búsqueda."""
+    return inv.list_assignable_users(db, ctx, company_id=company_id, search=search)
+
+
+# ----- Selectores dependientes de pertenencia (todo validado/scopeado) -----
+@router.get("/organizations", response_model=List[TenantOption])
+async def inv_organizations(db: Session = Depends(get_db), ctx: TenancyContext = Depends(require_asset_ctx)):
+    return inv.list_org_options(db, ctx)
+
+
+@router.get("/companies", response_model=List[TenantOption])
+async def inv_companies(organization_id: UUID, db: Session = Depends(get_db), ctx: TenancyContext = Depends(require_asset_ctx)):
+    return inv.list_company_options(db, ctx, organization_id)
+
+
+@router.get("/departments", response_model=List[TenantOption])
+async def inv_departments(company_id: UUID, db: Session = Depends(get_db), ctx: TenancyContext = Depends(require_asset_ctx)):
+    return inv.list_department_options(db, ctx, company_id)
+
+
+@router.get("/branches", response_model=List[TenantOption])
+async def inv_branches(organization_id: UUID, company_id: Optional[UUID] = None,
+                       db: Session = Depends(get_db), ctx: TenancyContext = Depends(require_asset_ctx)):
+    return inv.list_branch_options(db, ctx, organization_id, company_id)
+
+
+@router.get("/locations", response_model=List[TenantOption])
+async def inv_locations(branch_id: UUID, db: Session = Depends(get_db), ctx: TenancyContext = Depends(require_asset_ctx)):
+    return inv.list_location_options(db, ctx, branch_id)
 
 
 # ============================================================
@@ -66,8 +103,10 @@ async def assignable_users(
 @router.get("/", response_model=List[EquipmentListItem])
 async def list_equipment(
     search: Optional[str] = None,
+    organization_id: Optional[UUID] = None,
     company_id: Optional[UUID] = None,
     branch_id: Optional[UUID] = None,
+    department_id: Optional[UUID] = None,
     tipo: Optional[str] = None,
     estado: Optional[str] = None,
     marca: Optional[str] = None,
@@ -80,7 +119,8 @@ async def list_equipment(
 ):
     return inv.list_equipment(
         db, ctx,
-        company_id=company_id, branch_id=branch_id, tipo=tipo, estado=estado,
+        organization_id=organization_id, company_id=company_id, branch_id=branch_id,
+        department_id=department_id, tipo=tipo, estado=estado,
         marca=marca, serial=serial, assigned_user_id=assigned_user_id,
         search=search, limit=limit, offset=offset,
     )
@@ -150,4 +190,3 @@ async def list_assignments(
     ctx: TenancyContext = Depends(require_asset_ctx),
 ):
     return inv.list_assignments(db, ctx, equipment_id)
-

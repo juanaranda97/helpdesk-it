@@ -18,12 +18,16 @@ from app.services import inventory as inv
 # ----------------------------------------------------------------------
 ORG_A = str(uuid.uuid4())
 ORG_B = str(uuid.uuid4())
+COMPANY_A = str(uuid.uuid4())
+COMPANY_B = str(uuid.uuid4())
 USER = str(uuid.uuid4())
 TARGET = str(uuid.uuid4())
 EQ_ID = uuid.uuid4()
 
 
-def ctx_for(role="tecnico", org=ORG_A, active=None, impersonating=False, company=None):
+def ctx_for(role="tecnico", org=ORG_A, active=None, impersonating=False, company=COMPANY_A):
+    # Por defecto el rol sub-organización (tecnico) tiene empresa asignada (COMPANY_A):
+    # el fail-closed exige empresa para operar. Los casos org-level usan role="org_admin".
     active = active if active is not None else org
     return TenancyContext(
         user={"id": USER, "role": role, "organization_id": org, "company_id": company},
@@ -101,36 +105,24 @@ def test_tenant_for_create_sin_org_falla():
     assert e.value.status_code == 400
 
 
-# ======================================================================
-# 2) create_equipment — el tenant se fija en backend, no desde el cliente
-# ======================================================================
-def test_create_fija_tenant_desde_contexto():
-    c = ctx_for(org=ORG_A, company=None)
-    data = EquipmentCreate(tipo="NB", codigo_interno="EQ-1", marca="Dell")
-    eq = inv.create_equipment(FakeSession({}), c, data, {"id": USER})
-    assert str(eq.organization_id) == ORG_A          # viene del contexto
-    assert str(eq.created_by) == USER
-    assert eq.estado == "disponible"                  # default
-    assert eq.tipo == "NB"
-
-def test_create_ignora_org_enviada_por_cliente():
-    # EquipmentCreate no tiene campo organization_id → aunque el cliente lo mande,
-    # no llega al modelo; el backend fija el del contexto.
-    assert "organization_id" not in EquipmentCreate.model_fields
-    assert "company_id" not in EquipmentCreate.model_fields
+# NOTA: la creación de activos (create_equipment) pasó a requerir resolución de
+# tenant contra la DB (ITAM-02: plataforma elige org/empresa, cliente fijo). Su
+# cobertura se trasladó a pruebas con base real en test_inventory_db.py y
+# test_itam02.py. Aquí quedan las decisiones PURAS de TenancyContext.
 
 
 # ======================================================================
 # 3) Asignaciones — tenant, usuario mismo-org, no doble asignación
 # ======================================================================
-def _equipment(org=ORG_A, estado="disponible"):
+def _equipment(org=ORG_A, estado="disponible", company=COMPANY_A):
     return Equipment(id=EQ_ID, tipo="NB", organization_id=uuid.UUID(org),
-                     company_id=None, estado=estado)
+                     company_id=uuid.UUID(company) if company else None, estado=estado)
 
 def test_assign_ok_mismo_tenant():
     c = ctx_for(org=ORG_A)
     eq = _equipment(ORG_A)
-    target = Profile(id=uuid.UUID(TARGET), full_name="Juan", organization_id=uuid.UUID(ORG_A))
+    target = Profile(id=uuid.UUID(TARGET), full_name="Juan",
+                     organization_id=uuid.UUID(ORG_A), company_id=uuid.UUID(COMPANY_A))
     sess = FakeSession({Equipment: eq, Profile: target, EquipmentAssignment: None})
     a = inv.assign_equipment(sess, c, EQ_ID, AssignmentCreate(user_id=uuid.UUID(TARGET)), {"id": USER})
     assert str(a.user_id) == TARGET
@@ -140,16 +132,42 @@ def test_assign_ok_mismo_tenant():
 def test_assign_rechaza_usuario_de_otra_org():
     c = ctx_for(org=ORG_A)
     eq = _equipment(ORG_A)
-    target_b = Profile(id=uuid.UUID(TARGET), full_name="Otro", organization_id=uuid.UUID(ORG_B))
+    target_b = Profile(id=uuid.UUID(TARGET), full_name="Otro",
+                       organization_id=uuid.UUID(ORG_B), company_id=uuid.UUID(COMPANY_B))
     sess = FakeSession({Equipment: eq, Profile: target_b, EquipmentAssignment: None})
     with pytest.raises(HTTPException) as e:
         inv.assign_equipment(sess, c, EQ_ID, AssignmentCreate(user_id=uuid.UUID(TARGET)), {"id": USER})
     assert e.value.status_code == 403
 
+def test_assign_rechaza_usuario_de_otra_empresa_misma_org():
+    # Misma organización pero DISTINTA empresa → 403 (empresa exacta, NULL no cuenta).
+    c = ctx_for(org=ORG_A)
+    eq = _equipment(ORG_A)  # empresa COMPANY_A
+    target = Profile(id=uuid.UUID(TARGET), full_name="OtraEmpresa",
+                     organization_id=uuid.UUID(ORG_A), company_id=uuid.UUID(COMPANY_B))
+    sess = FakeSession({Equipment: eq, Profile: target, EquipmentAssignment: None})
+    with pytest.raises(HTTPException) as e:
+        inv.assign_equipment(sess, c, EQ_ID, AssignmentCreate(user_id=uuid.UUID(TARGET)), {"id": USER})
+    assert e.value.status_code == 403
+
+def test_assign_rechaza_activo_sin_empresa():
+    # Activo sin empresa asignada → no se puede asignar de forma segura (409).
+    # Se usa org_admin (alcance multiempresa) para poder ALCANZAR el activo sin
+    # empresa; un rol acotado a empresa no lo vería (404 por aislamiento).
+    c = ctx_for(role="org_admin", org=ORG_A, company=None)
+    eq = _equipment(ORG_A, company=None)
+    target = Profile(id=uuid.UUID(TARGET), full_name="Juan",
+                     organization_id=uuid.UUID(ORG_A), company_id=uuid.UUID(COMPANY_A))
+    sess = FakeSession({Equipment: eq, Profile: target, EquipmentAssignment: None})
+    with pytest.raises(HTTPException) as e:
+        inv.assign_equipment(sess, c, EQ_ID, AssignmentCreate(user_id=uuid.UUID(TARGET)), {"id": USER})
+    assert e.value.status_code == 409
+
 def test_assign_rechaza_doble_asignacion():
     c = ctx_for(org=ORG_A)
     eq = _equipment(ORG_A)
-    target = Profile(id=uuid.UUID(TARGET), full_name="Juan", organization_id=uuid.UUID(ORG_A))
+    target = Profile(id=uuid.UUID(TARGET), full_name="Juan",
+                     organization_id=uuid.UUID(ORG_A), company_id=uuid.UUID(COMPANY_A))
     active = EquipmentAssignment(id=uuid.uuid4(), equipment_id=EQ_ID, user_id=uuid.UUID(TARGET), returned_at=None)
     sess = FakeSession({Equipment: eq, Profile: target, EquipmentAssignment: active})
     with pytest.raises(HTTPException) as e:
@@ -205,4 +223,3 @@ def test_get_equipment_null_tenant_da_404_para_usuario_scoped():
     with pytest.raises(HTTPException) as e:
         inv.get_equipment(sess, c, EQ_ID)
     assert e.value.status_code == 404
-

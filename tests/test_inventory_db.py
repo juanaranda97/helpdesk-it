@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError, DataError
 from app.core.tenancy import TenancyContext
 from app.services import inventory as inv
 from app.schemas.inventory import EquipmentUpdate, AssignmentCreate, AssignmentReturn
-from tests.conftest import mk_profile, mk_equipment, user_dict
+from tests.conftest import mk_profile, mk_equipment, mk_branch, mk_location, mk_org, mk_company, user_dict
 
 ORG_A = uuid.uuid4()
 ORG_B = uuid.uuid4()
@@ -20,7 +20,9 @@ COMP_A1 = uuid.uuid4()
 COMP_A2 = uuid.uuid4()
 
 
-def ctx_for(role="tecnico", org=ORG_A, company=None, active=None, impersonating=False):
+def ctx_for(role="org_admin", org=ORG_A, company=None, active=None, impersonating=False):
+    # Default org_admin: alcance org-level (multiempresa) sin exigir empresa. Los
+    # casos acotados a empresa pasan role="company_admin"/"tecnico" + company.
     org_s = str(org) if org else None
     active_s = str(active) if active else org_s
     return TenancyContext(
@@ -102,8 +104,8 @@ def test_valores_validos_se_insertan(db):
 # Asignación / devolución
 # ======================================================================
 def test_assign_y_historial(db):
-    target = mk_profile(db, ORG_A, full_name="María")
-    eq = mk_equipment(db, ORG_A, codigo_interno="A-1")
+    target = mk_profile(db, ORG_A, company_id=COMP_A1, full_name="María")
+    eq = mk_equipment(db, ORG_A, company_id=COMP_A1, codigo_interno="A-1")
     ctx = ctx_for(org=ORG_A)
     a = inv.assign_equipment(db, ctx, eq.id, AssignmentCreate(user_id=target.id), {"id": str(uuid.uuid4())})
     assert a.user_id == target.id
@@ -114,16 +116,34 @@ def test_assign_y_historial(db):
 
 
 def test_assign_usuario_de_otra_org_403(db):
-    target_b = mk_profile(db, ORG_B, full_name="Otro")
-    eq = mk_equipment(db, ORG_A)
+    target_b = mk_profile(db, ORG_B, company_id=uuid.uuid4(), full_name="Otro")
+    eq = mk_equipment(db, ORG_A, company_id=COMP_A1)
     with pytest.raises(HTTPException) as e:
         inv.assign_equipment(db, ctx_for(org=ORG_A), eq.id, AssignmentCreate(user_id=target_b.id), {"id": str(uuid.uuid4())})
     assert e.value.status_code == 403
 
 
+def test_assign_usuario_de_otra_empresa_misma_org_403(db):
+    # Misma organización, DISTINTA empresa → 403 (empresa exacta exigida).
+    target = mk_profile(db, ORG_A, company_id=COMP_A2, full_name="OtraEmp")
+    eq = mk_equipment(db, ORG_A, company_id=COMP_A1)
+    with pytest.raises(HTTPException) as e:
+        inv.assign_equipment(db, ctx_for(org=ORG_A), eq.id, AssignmentCreate(user_id=target.id), {"id": str(uuid.uuid4())})
+    assert e.value.status_code == 403
+
+
+def test_assign_activo_sin_empresa_409(db):
+    # Activo sin empresa → no se puede asignar de forma segura.
+    target = mk_profile(db, ORG_A, company_id=COMP_A1)
+    eq = mk_equipment(db, ORG_A)  # company_id None
+    with pytest.raises(HTTPException) as e:
+        inv.assign_equipment(db, ctx_for(org=ORG_A), eq.id, AssignmentCreate(user_id=target.id), {"id": str(uuid.uuid4())})
+    assert e.value.status_code == 409
+
+
 def test_no_doble_asignacion(db):
-    t1 = mk_profile(db, ORG_A); t2 = mk_profile(db, ORG_A)
-    eq = mk_equipment(db, ORG_A)
+    t1 = mk_profile(db, ORG_A, company_id=COMP_A1); t2 = mk_profile(db, ORG_A, company_id=COMP_A1)
+    eq = mk_equipment(db, ORG_A, company_id=COMP_A1)
     ctx = ctx_for(org=ORG_A)
     inv.assign_equipment(db, ctx, eq.id, AssignmentCreate(user_id=t1.id), {"id": str(uuid.uuid4())})
     with pytest.raises(HTTPException) as e:
@@ -132,8 +152,8 @@ def test_no_doble_asignacion(db):
 
 
 def test_return_libera_y_permite_reasignar(db):
-    t1 = mk_profile(db, ORG_A); t2 = mk_profile(db, ORG_A)
-    eq = mk_equipment(db, ORG_A)
+    t1 = mk_profile(db, ORG_A, company_id=COMP_A1); t2 = mk_profile(db, ORG_A, company_id=COMP_A1)
+    eq = mk_equipment(db, ORG_A, company_id=COMP_A1)
     ctx = ctx_for(org=ORG_A)
     inv.assign_equipment(db, ctx, eq.id, AssignmentCreate(user_id=t1.id), {"id": str(uuid.uuid4())})
     inv.return_equipment(db, ctx, eq.id, AssignmentReturn(returned_reason="fin"), {"id": str(uuid.uuid4())})
@@ -145,8 +165,8 @@ def test_return_libera_y_permite_reasignar(db):
 
 
 def test_assign_cross_tenant_404(db):
-    target = mk_profile(db, ORG_A)
-    eq_b = mk_equipment(db, ORG_B)
+    target = mk_profile(db, ORG_A, company_id=COMP_A1)
+    eq_b = mk_equipment(db, ORG_B, company_id=uuid.uuid4())
     with pytest.raises(HTTPException) as e:
         inv.assign_equipment(db, ctx_for(org=ORG_A), eq_b.id, AssignmentCreate(user_id=target.id), {"id": str(uuid.uuid4())})
     assert e.value.status_code == 404
@@ -194,13 +214,16 @@ def test_assignable_users_filtra_por_empresa(db):
 # API end-to-end (TestClient) — prueba router + service + SQL real
 # ======================================================================
 def test_api_crud_y_aislamiento(api_client, db):
+    mk_org(db, org_id=ORG_A, name="Org A"); mk_org(db, org_id=ORG_B, name="Org B")
+    comp_a = mk_company(db, ORG_A, name="Comp A")
     ua = user_dict(mk_profile(db, ORG_A, role="org_admin", full_name="AdminA"))
     ub = user_dict(mk_profile(db, ORG_B, role="org_admin", full_name="AdminB"))
 
     api_client.login(ua)
-    r = api_client.post("/inventory/", json={"tipo": "NB", "codigo_interno": "API-A-1", "marca": "Dell"})
+    r = api_client.post("/inventory/", json={"tipo": "NB", "codigo_interno": "API-A-1", "marca": "Dell", "company_id": str(comp_a.id)})
     assert r.status_code == 201, r.text
     assert str(r.json()["organization_id"]) == str(ORG_A)   # tenant fijado en backend
+    assert str(r.json()["company_id"]) == str(comp_a.id)
 
     # Org A ve su activo
     r = api_client.get("/inventory/")
@@ -213,8 +236,34 @@ def test_api_crud_y_aislamiento(api_client, db):
 
     # tipo inválido -> 422 (Pydantic, antes de tocar la DB)
     api_client.login(ua)
-    r = api_client.post("/inventory/", json={"tipo": "notebook"})
+    r = api_client.post("/inventory/", json={"tipo": "notebook", "company_id": str(comp_a.id)})
     assert r.status_code == 422
+
+
+def test_http_meta_failclosed_rol_sin_empresa(api_client, db):
+    # GET /inventory/meta queda protegido CENTRALMENTE en el router (require_asset_ctx):
+    # un técnico SIN empresa -> 403; org_admin y plataforma conservan su acceso.
+    mk_org(db, org_id=ORG_A, name="Org A")
+    tecnico_sin_emp = user_dict(mk_profile(db, ORG_A, role="tecnico", full_name="Tec"))   # company_id None
+    org_admin = user_dict(mk_profile(db, ORG_A, role="org_admin", full_name="Adm"))        # company_id None (multiempresa)
+    platform = user_dict(mk_profile(db, ORG_A, role="platform_owner", full_name="Plat"))
+
+    api_client.login(tecnico_sin_emp)
+    assert api_client.get("/inventory/meta").status_code == 403
+
+    api_client.login(org_admin)
+    assert api_client.get("/inventory/meta").status_code == 200
+
+    api_client.login(platform)
+    assert api_client.get("/inventory/meta").status_code == 200
+
+
+def test_http_meta_tecnico_con_empresa_ok(api_client, db):
+    # Contraprueba: el mismo técnico, CON empresa asignada, sí accede a /meta.
+    mk_org(db, org_id=ORG_A, name="Org A"); comp = mk_company(db, ORG_A, company_id=COMP_A1)
+    tecnico = user_dict(mk_profile(db, ORG_A, role="tecnico", company_id=COMP_A1, full_name="Tec"))
+    api_client.login(tecnico)
+    assert api_client.get("/inventory/meta").status_code == 200
 
 
 # ======================================================================
@@ -259,31 +308,34 @@ def test_company_admin_404_al_asignar_activo_de_otra_empresa(db):
 # ======================================================================
 def test_crear_con_sucursal_de_otra_org_da_400(db):
     from app.schemas.inventory import EquipmentCreate
-    from tests.conftest import mk_branch
+    mk_org(db, org_id=ORG_A); mk_org(db, org_id=ORG_B)
+    comp = mk_company(db, ORG_A)
     branch_b = mk_branch(db, ORG_B)   # sucursal de OTRA org
     ctx = ctx_for(role="org_admin", org=ORG_A)
     with pytest.raises(HTTPException) as e:
-        inv.create_equipment(db, ctx, EquipmentCreate(tipo="NB", branch_id=branch_b.id), {"id": str(uuid.uuid4())})
+        inv.create_equipment(db, ctx, EquipmentCreate(tipo="NB", branch_id=branch_b.id, company_id=comp.id), {"id": str(uuid.uuid4())})
     assert e.value.status_code == 400
 
 
 def test_crear_con_sucursal_valida_ok(db):
     from app.schemas.inventory import EquipmentCreate
-    from tests.conftest import mk_branch
-    branch_a = mk_branch(db, ORG_A)
+    mk_org(db, org_id=ORG_A)
+    comp = mk_company(db, ORG_A)
+    branch_a = mk_branch(db, ORG_A, company_id=comp.id)
     ctx = ctx_for(role="org_admin", org=ORG_A)
-    eq = inv.create_equipment(db, ctx, EquipmentCreate(tipo="NB", branch_id=branch_a.id, codigo_interno="OK-1"), {"id": str(uuid.uuid4())})
+    eq = inv.create_equipment(db, ctx, EquipmentCreate(tipo="NB", branch_id=branch_a.id, codigo_interno="OK-1", company_id=comp.id), {"id": str(uuid.uuid4())})
     assert str(eq.branch_id) == str(branch_a.id)
 
 
 def test_ubicacion_de_otra_sucursal_da_400(db):
     from app.schemas.inventory import EquipmentCreate
-    from tests.conftest import mk_branch, mk_location
-    b1 = mk_branch(db, ORG_A); b2 = mk_branch(db, ORG_A)
-    loc_b2 = mk_location(db, ORG_A, b2.id)
+    mk_org(db, org_id=ORG_A)
+    comp = mk_company(db, ORG_A)
+    b1 = mk_branch(db, ORG_A, company_id=comp.id); b2 = mk_branch(db, ORG_A, company_id=comp.id)
+    loc_b2 = mk_location(db, ORG_A, b2.id, company_id=comp.id)
     ctx = ctx_for(role="org_admin", org=ORG_A)
     with pytest.raises(HTTPException) as e:
-        inv.create_equipment(db, ctx, EquipmentCreate(tipo="NB", branch_id=b1.id, physical_location_id=loc_b2.id), {"id": str(uuid.uuid4())})
+        inv.create_equipment(db, ctx, EquipmentCreate(tipo="NB", branch_id=b1.id, physical_location_id=loc_b2.id, company_id=comp.id), {"id": str(uuid.uuid4())})
     assert e.value.status_code == 400
 
 
@@ -298,4 +350,3 @@ def test_stats_cuenta_reparacion_y_baja_desde_codigos_reales(db):
     assert s["en_reparacion"] == 1
     assert s["de_baja"] == 1
     assert s["disponibles"] == 1
-

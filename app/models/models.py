@@ -27,6 +27,7 @@ class Profile(Base):
     avatar_url = Column(String)
     signature_url = Column(String)
     is_active = Column(Boolean, default=True)
+    estado_laboral = Column(String)   # activo | baja | suspendido (para elegibilidad)
     # Tenancy (columnas YA existentes en la DB; se mapean para validar que un
     # usuario pertenezca a una org/empresa — p.ej. al asignar un activo).
     organization_id = Column(UUID(as_uuid=True))
@@ -303,6 +304,7 @@ class Equipment(Base):
     created_by = Column(UUID(as_uuid=True))
     branch_id = Column(UUID(as_uuid=True))
     physical_location_id = Column(UUID(as_uuid=True))
+    department_id = Column(UUID(as_uuid=True))   # FK a departments.id (requiere migración)
     organization_id = Column(UUID(as_uuid=True))
     company_id = Column(UUID(as_uuid=True))
 
@@ -349,6 +351,33 @@ class PhysicalLocation(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     branch_id = Column(UUID(as_uuid=True))
+    name = Column(Text)
+    is_active = Column(Boolean, default=True)
+    organization_id = Column(UUID(as_uuid=True))
+    company_id = Column(UUID(as_uuid=True))
+
+
+class Organization(Base):
+    """Organización (organizations). Modelo mínimo de SOLO LECTURA."""
+    __tablename__ = "organizations"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    name = Column(Text)
+    is_active = Column(Boolean, default=True)
+
+
+class Company(Base):
+    """Empresa (companies). Modelo mínimo de SOLO LECTURA."""
+    __tablename__ = "companies"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    organization_id = Column(UUID(as_uuid=True))
+    name = Column(Text)
+    is_active = Column(Boolean, default=True)
+
+
+class Department(Base):
+    """Departamento/área (departments). Modelo mínimo de SOLO LECTURA."""
+    __tablename__ = "departments"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     name = Column(Text)
     is_active = Column(Boolean, default=True)
     organization_id = Column(UUID(as_uuid=True))

@@ -29,7 +29,7 @@ EQUIPMENT_TABLES = [
     "equipment_assignments", "equipment", "tickets", "ticket_comments",
     "ticket_attachments", "satisfaction_surveys", "notifications", "activity_log",
     "profiles", "categories", "locations", "system_config",
-    "branches", "physical_locations",
+    "branches", "physical_locations", "organizations", "companies", "departments",
 ]
 
 # Hosts locales autorizados para correr la suite (NUNCA una base remota/productiva).
@@ -145,10 +145,12 @@ def api_client(engine, Session):
 # ----------------------------------------------------------------------
 # Helpers de datos
 # ----------------------------------------------------------------------
-def mk_profile(db, org_id, *, role="usuario", company_id=None, full_name="Usuario", is_active=True):
+def mk_profile(db, org_id, *, role="usuario", company_id=None, full_name="Usuario",
+               is_active=True, estado_laboral=None, email=None):
     from app.models import Profile
-    p = Profile(id=uuid.uuid4(), email=f"{uuid.uuid4().hex[:8]}@t.com", full_name=full_name,
-                role=role, is_active=is_active, organization_id=org_id, company_id=company_id)
+    p = Profile(id=uuid.uuid4(), email=email or f"{uuid.uuid4().hex[:8]}@t.com", full_name=full_name,
+                role=role, is_active=is_active, estado_laboral=estado_laboral,
+                organization_id=org_id, company_id=company_id)
     db.add(p); db.commit()
     return p
 
@@ -160,6 +162,30 @@ def mk_equipment(db, org_id, *, tipo="NB", estado="disponible", company_id=None,
                   company_id=company_id, codigo_interno=codigo_interno, created_by=created_by, **extra)
     db.add(e); db.commit()
     return e
+
+
+def mk_org(db, *, name="Org", is_active=True, org_id=None):
+    import uuid as _u
+    from app.models import Organization
+    o = Organization(id=org_id or _u.uuid4(), name=name, is_active=is_active)
+    db.add(o); db.commit()
+    return o
+
+
+def mk_company(db, org_id, *, name="Empresa", is_active=True, company_id=None):
+    import uuid as _u
+    from app.models import Company
+    c = Company(id=company_id or _u.uuid4(), organization_id=org_id, name=name, is_active=is_active)
+    db.add(c); db.commit()
+    return c
+
+
+def mk_department(db, org_id, company_id, *, name="Depto", is_active=True):
+    import uuid as _u
+    from app.models import Department
+    d = Department(id=_u.uuid4(), name=name, organization_id=org_id, company_id=company_id, is_active=is_active)
+    db.add(d); db.commit()
+    return d
 
 
 def mk_branch(db, org_id, *, company_id=None, name="Sucursal", is_active=True):
@@ -185,4 +211,3 @@ def user_dict(profile):
         "company_id": str(profile.company_id) if profile.company_id else None,
         "estado_laboral": "activo",
     }
-

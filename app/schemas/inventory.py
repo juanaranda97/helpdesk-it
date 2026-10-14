@@ -63,10 +63,16 @@ class EquipmentBase(BaseModel):
     # organization_id / company_id se resuelven en backend desde el contexto.
     branch_id: Optional[UUID] = None
     physical_location_id: Optional[UUID] = None
+    department_id: Optional[UUID] = None   # área responsable (FK departments; requiere migración)
 
 
 class EquipmentCreate(EquipmentBase):
-    pass
+    # Selección EXPLÍCITA de tenant para usuarios de plataforma (validada en backend).
+    # Los no-plataforma la tienen precargada y no pueden cambiarla.
+    organization_id: Optional[UUID] = None
+    company_id: Optional[UUID] = None
+    # Asignación inicial opcional (responsable). Si None -> activo sin responsable.
+    assigned_to: Optional[UUID] = None
 
 
 class EquipmentUpdate(BaseModel):
@@ -103,12 +109,20 @@ class EquipmentUpdate(BaseModel):
     notas: Optional[str] = None
     branch_id: Optional[UUID] = None
     physical_location_id: Optional[UUID] = None
+    department_id: Optional[UUID] = None
 
 
 class AssignableUser(BaseModel):
     """Datos mínimos de un usuario elegible para asignación (sin exponer de más)."""
     id: UUID
     full_name: Optional[str] = None
+    email: Optional[str] = None
+
+
+class TenantOption(BaseModel):
+    """Opción genérica para selectores dependientes (org/empresa/depto/sucursal/ubicación)."""
+    id: UUID
+    name: Optional[str] = None
 
 
 class CurrentAssignment(BaseModel):
@@ -135,9 +149,15 @@ class EquipmentListItem(BaseModel):
     branch_id: Optional[UUID] = None
     company_id: Optional[UUID] = None
     organization_id: Optional[UUID] = None
+    department_id: Optional[UUID] = None
     assigned_user_id: Optional[UUID] = None
     assigned_user_name: Optional[str] = None
     updated_at: Optional[datetime] = None
+    # Nombres resueltos para la grilla (pertenencia)
+    organization_name: Optional[str] = None
+    company_name: Optional[str] = None
+    department_name: Optional[str] = None
+    branch_name: Optional[str] = None
     # Procedencia del registro. Hoy SIEMPRE "manual": no existe agente/discovery.
     data_source: str = "manual"
 
@@ -153,6 +173,11 @@ class EquipmentResponse(EquipmentBase):
     created_at: datetime
     updated_at: datetime
     current_assignment: Optional[CurrentAssignment] = None
+    # Nombres resueltos (pertenencia)
+    organization_name: Optional[str] = None
+    company_name: Optional[str] = None
+    department_name: Optional[str] = None
+    branch_name: Optional[str] = None
     # Hoy todo dato es manual; cuando exista discovery, por campo/registro.
     data_source: str = "manual"
 
@@ -208,4 +233,3 @@ class InventoryMeta(BaseModel):
     tipos: List[str] = TIPOS
     marcas: List[str] = []           # distinct desde los datos del tenant
     branches: List[BranchLite] = []  # sucursales de la org activa
-

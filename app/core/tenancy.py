@@ -103,16 +103,17 @@ class TenancyContext:
 
         Aplica cuando el contexto está LIMITADO a una compañía:
         - Usuario de plataforma que eligió empresa (X-Company-Id validado).
-        - Rol company_admin (acotado a su empresa).
-        En overview de plataforma (sin org) -> None.
+        - Roles sub-organización (company_admin, manager, supervisor, tecnico,
+          rrhh, usuario) con empresa asignada: quedan acotados a SU empresa y no
+          pueden ver datos de otra empresa de la misma organización.
+        org_admin/org_owner conservan su alcance multiempresa; plataforma su
+        alcance global (salvo que elija empresa). En overview de plataforma -> None.
         """
         if self.scope_org_id is None:
             return None
-        if self.is_platform_user and self.is_impersonating and self.active_company_id:
-            return self.active_company_id
         if self.is_platform_user and self.active_company_id:
             return self.active_company_id
-        if self.role == "company_admin" and self.active_company_id:
+        if permissions.is_company_scoped_role(self.role) and self.active_company_id:
             return self.active_company_id
         return None
 
@@ -124,6 +125,37 @@ class TenancyContext:
         if resource_company_id is None:
             return False
         return str(resource_company_id) == str(sc)
+
+    @property
+    def company_scope_required(self) -> bool:
+        """¿El rol EXIGE una empresa asignada para operar?
+
+        True para los roles sub-organización (company_admin, manager, supervisor,
+        tecnico, rrhh, usuario). False para org_admin/org_owner/admin y plataforma,
+        que conservan alcance multiempresa/global autorizado y pueden operar con
+        empresa = None de forma legítima.
+        """
+        return permissions.is_company_scoped_role(self.role)
+
+    @property
+    def has_company_scope(self) -> bool:
+        return self.active_company_id is not None
+
+    @property
+    def missing_required_company(self) -> bool:
+        """Rol que exige empresa pero NO tiene ninguna asignada."""
+        return self.company_scope_required and not self.has_company_scope
+
+    def assert_company_scope(self) -> None:
+        """FAIL-CLOSED. Un rol sub-organización SIN empresa asignada no puede operar
+        con alcance organizacional: se corta con 403 en lugar de devolver None
+        (que equivaldría a acceso amplio a toda la organización). org_admin/org_owner
+        y plataforma no se ven afectados (su empresa None es alcance legítimo)."""
+        if self.missing_required_company:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Tu usuario no tiene empresa asignada. Contactá al administrador.",
+            )
 
     def tenant_for_create(self):
         """
@@ -292,6 +324,9 @@ def get_scoped_tenancy(
 
     # Un company_admin SIN empresa asignada NO puede obtener acceso amplio a la org:
     # falla con 403 en vez de quedar con scope_company_id=None.
+    # (El fail-closed del resto de roles sub-organización se aplica a nivel de
+    #  operación en el módulo de Inventario — ver services/inventory.assert_company_scope.
+    #  Tickets conserva su contrato org-level previo y no se ve afectado.)
     if role == "company_admin" and not active_company_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
