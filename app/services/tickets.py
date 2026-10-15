@@ -166,16 +166,31 @@ def update_ticket(
     is_assignee = ticket.assigned_to == user_id
     is_staff = permissions.can_staff_tickets(user_role)
 
-    if not (is_owner or is_assignee or is_staff):
+    # SEPARACIÓN de permisos:
+    #  - acceso PERSONAL: solicitante o técnico asignado (edita campos no privilegiados
+    #    de SU propio ticket, aunque no tenga empresa).
+    #  - PRIVILEGIO de staff: cambiar estado/asignación/prioridad/horas/costo. Requiere
+    #    rol de staff Y alcance de empresa. Un staff acotado SIN empresa NO obtiene
+    #    privilegios administrativos automáticamente por ser solicitante/asignado.
+    staff_privilege = is_staff and (ctx is None or not getattr(ctx, "missing_required_company", False))
+
+    if not (is_owner or is_assignee or staff_privilege):
         raise HTTPException(status_code=403, detail="No tenés permiso para editar este ticket")
 
-    # Solo staff (técnico+) puede cambiar estado, asignación, prioridad, horas, costo
     update_data = data.model_dump(exclude_unset=True)
 
-    restricted_fields = ["status", "assigned_to", "priority", "actual_hours", "cost"]
-    if not is_staff:
-        for field in restricted_fields:
-            update_data.pop(field, None)
+    # Campos PRIVILEGIADOS (solo con privilegio de staff): estado, asignación, prioridad,
+    # categoría, horas, costo, notas de resolución y fecha de vencimiento.
+    # Acceso PERSONAL (solicitante/asignado SIN privilegio de staff): allow-list explícita.
+    PERSONAL_ALLOWED_FIELDS = {"title", "description"}
+    if not staff_privilege:
+        unauthorized = set(update_data.keys()) - PERSONAL_ALLOWED_FIELDS
+        if unauthorized:
+            # NO se ignoran silenciosamente ni se aplica parcialmente: se rechaza todo el PATCH.
+            raise HTTPException(
+                status_code=403,
+                detail="No tenés permiso para modificar: " + ", ".join(sorted(unauthorized)),
+            )
 
     # Solo supervisor+ puede asignar a otros; un técnico puede autoasignarse
     if "assigned_to" in update_data and not permissions.can_assign_tickets(user_role):

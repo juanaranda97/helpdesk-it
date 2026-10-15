@@ -46,17 +46,38 @@ class ProfileUpdate(ProfileBase):
 
 
 class ProfileRoleUpdate(BaseModel):
-    role: Literal["usuario", "tecnico", "supervisor", "admin"]
+    # Acepta toda la jerarquía (incl. legacy). La AUTORIZACIÓN del cambio se valida
+    # en backend (jerarquía del actor, protección de owners, no autoescalada).
+    role: str
+
+
+class UserAdminUpdate(BaseModel):
+    """Edición CONTROLADA de un perfil por un administrador. Todos los campos son
+    opcionales; se aplican SOLO los enviados (exclude_unset) para evitar cambios
+    implícitos. La autorización por campo se valida en el servicio."""
+    full_name: Optional[str] = Field(default=None, min_length=2, max_length=100)
+    organization_id: Optional[UUID] = None
+    company_id: Optional[UUID] = None
+    department_id: Optional[UUID] = None
+    department: Optional[str] = None          # texto legacy (se reconcilia con department_id)
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+    estado_laboral: Optional[Literal["activo", "baja", "suspendido"]] = None
 
 
 class ProfileResponse(ProfileBase):
     model_config = ConfigDict(from_attributes=True)
-    
+
     id: UUID
     email: str
     role: str
     avatar_url: Optional[str] = None
     is_active: bool
+    estado_laboral: Optional[str] = None
+    organization_id: Optional[UUID] = None
+    company_id: Optional[UUID] = None
+    department_id: Optional[UUID] = None
+    branch_id: Optional[UUID] = None
     created_at: datetime
 
 

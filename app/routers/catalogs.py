@@ -7,14 +7,17 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import get_current_user, require_admin, require_supervisor
 from app.core.supabase_client import supabase_admin
+from app.core.tenancy import get_scoped_tenancy, TenancyContext
+from app.core import permissions
 from app.models import Category, Location, SystemConfig, Profile, Notification
 from app.schemas.schemas import (
     CategoryCreate, CategoryUpdate, CategoryResponse,
     LocationCreate, LocationResponse,
-    ProfileResponse, ProfileRoleUpdate,
+    ProfileResponse, ProfileRoleUpdate, UserAdminUpdate,
     ConfigUpdate, ConfigResponse,
     NotificationResponse,
 )
+from app.services import users as users_service
 
 
 # ============================================================
@@ -90,24 +93,77 @@ async def create_location(
 users_router = APIRouter(prefix="/users", tags=["Usuarios"])
 
 
+def require_user_manager(ctx: TenancyContext = Depends(get_scoped_tenancy)) -> TenancyContext:
+    """Contexto de tenancy + exige permiso de gestión de usuarios, y FAIL-CLOSED de
+    empresa (un rol sub-organización sin empresa no puede gestionar usuarios)."""
+    if not permissions.can_manage_users(ctx.role):
+        raise HTTPException(status_code=403, detail="Requiere permisos de gestión de usuarios")
+    ctx.assert_company_scope()
+    return ctx
+
+
 @users_router.get("/", response_model=List[ProfileResponse])
 async def list_users(
+    search: str | None = None,
     db: Session = Depends(get_db),
-    _: dict = Depends(require_supervisor)
+    ctx: TenancyContext = Depends(require_user_manager),
 ):
-    return db.query(Profile).order_by(Profile.full_name).all()
+    """Lista usuarios del tenant del actor (org + empresa). Sin fugas cross-tenant."""
+    return users_service.list_users(db, ctx, search=search)
 
 
 @users_router.get("/technicians", response_model=List[ProfileResponse])
 async def list_technicians(
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    ctx: TenancyContext = Depends(get_scoped_tenancy),
 ):
-    """Lista técnicos disponibles para asignar."""
-    return db.query(Profile).filter(
-        Profile.role.in_(["tecnico", "supervisor", "admin"]),
-        Profile.is_active == True
-    ).order_by(Profile.full_name).all()
+    """Técnicos+ asignables del tenant del actor (activos). Scopeado en backend."""
+    return users_service.list_technicians(db, ctx)
+
+
+@users_router.get("/assignable-roles")
+async def assignable_roles(ctx: TenancyContext = Depends(require_user_manager)):
+    """Roles que ESTE actor puede otorgar (autorizados por backend; sin defaults
+    engañosos en el frontend)."""
+    base = ["usuario", "tecnico", "rrhh", "supervisor", "manager", "company_admin",
+            "org_admin", "org_owner", "platform_admin", "platform_owner"]
+    out = []
+    for r in base:
+        if not permissions.can_assign_role(ctx.role, r):
+            continue
+        if r in permissions.PLATFORM_ROLES and not permissions.is_platform_owner(ctx.role):
+            continue
+        out.append(r)
+    return {"roles": out}
+
+
+@users_router.get("/org-options")
+async def user_org_options(db: Session = Depends(get_db), ctx: TenancyContext = Depends(require_user_manager)):
+    return users_service.list_org_options(db, ctx)
+
+
+@users_router.get("/company-options")
+async def user_company_options(organization_id: UUID, db: Session = Depends(get_db),
+                               ctx: TenancyContext = Depends(require_user_manager)):
+    return users_service.list_company_options(db, ctx, organization_id)
+
+
+@users_router.get("/department-options")
+async def user_department_options(company_id: UUID, db: Session = Depends(get_db),
+                                  ctx: TenancyContext = Depends(require_user_manager)):
+    return users_service.list_department_options(db, ctx, company_id)
+
+
+@users_router.patch("/{user_id}", response_model=ProfileResponse)
+async def update_user(
+    user_id: UUID,
+    data: UserAdminUpdate,
+    db: Session = Depends(get_db),
+    ctx: TenancyContext = Depends(require_user_manager),
+):
+    """Edición controlada y parcial del perfil (nombre, org, empresa, depto, rol,
+    estado). Autorización por campo + auditoría en el servicio."""
+    return users_service.update_user(db, ctx, user_id, data)
 
 
 @users_router.patch("/{user_id}/role", response_model=ProfileResponse)
@@ -115,32 +171,18 @@ async def change_user_role(
     user_id: UUID,
     data: ProfileRoleUpdate,
     db: Session = Depends(get_db),
-    _: dict = Depends(require_admin)
+    ctx: TenancyContext = Depends(require_user_manager),
 ):
-    user = db.query(Profile).filter(Profile.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
-    
-    user.role = data.role
-    db.commit()
-    db.refresh(user)
-    return user
+    return users_service.change_role(db, ctx, user_id, data.role)
 
 
 @users_router.patch("/{user_id}/toggle-active", response_model=ProfileResponse)
 async def toggle_user_active(
     user_id: UUID,
     db: Session = Depends(get_db),
-    _: dict = Depends(require_admin)
+    ctx: TenancyContext = Depends(require_user_manager),
 ):
-    user = db.query(Profile).filter(Profile.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
-    
-    user.is_active = not user.is_active
-    db.commit()
-    db.refresh(user)
-    return user
+    return users_service.toggle_active(db, ctx, user_id)
 
 
 # ============================================================

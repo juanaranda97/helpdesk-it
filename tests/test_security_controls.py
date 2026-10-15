@@ -70,7 +70,8 @@ def test_usuario_normal_no_crea_comentario_interno(api_client, db):
 def test_staff_puede_comentar_interno_y_ver_ticket(api_client, db):
     cat = mk_category(db)
     u1 = user_dict(mk_profile(db, ORG_A, role="usuario"))
-    tech = user_dict(mk_profile(db, ORG_A, role="tecnico"))
+    # Staff org-level sin empresa sobre un ticket sin empresa: org_admin (multiempresa).
+    tech = user_dict(mk_profile(db, ORG_A, role="org_admin"))
     api_client.login(u1)
     t1 = api_client.post("/tickets/", json={"title": "Ticket U1", "category_id": cat.id, "priority": "media"}).json()
     api_client.login(tech)
@@ -152,7 +153,8 @@ def test_update_assigned_to_cross_org_403(api_client, db):
 def test_update_assigned_to_misma_org_ok(api_client, db):
     cat = mk_category(db)
     u1 = user_dict(mk_profile(db, ORG_A, role="usuario"))
-    sup_a = user_dict(mk_profile(db, ORG_A, role="supervisor"))
+    # Asignador staff org-level sin empresa: org_admin (puede asignar, multiempresa).
+    sup_a = user_dict(mk_profile(db, ORG_A, role="org_admin"))
     tech_a2 = mk_profile(db, ORG_A, role="tecnico")
     api_client.login(u1)
     t1 = api_client.post("/tickets/", json={"title": "asignar ok", "category_id": cat.id, "priority": "media"}).json()

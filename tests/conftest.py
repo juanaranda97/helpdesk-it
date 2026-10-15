@@ -30,6 +30,7 @@ EQUIPMENT_TABLES = [
     "ticket_attachments", "satisfaction_surveys", "notifications", "activity_log",
     "profiles", "categories", "locations", "system_config",
     "branches", "physical_locations", "organizations", "companies", "departments",
+    "profile_audit_log",
 ]
 
 # Hosts locales autorizados para correr la suite (NUNCA una base remota/productiva).

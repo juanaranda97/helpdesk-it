@@ -17,6 +17,7 @@ from app.models.models import (
     Organization,
     Company,
     Department,
+    ProfileAuditLog,
 )
 
 __all__ = [
@@ -37,4 +38,5 @@ __all__ = [
     "Organization",
     "Company",
     "Department",
+    "ProfileAuditLog",
 ]

@@ -65,9 +65,51 @@ ASSET_MANAGEMENT_ROLES: Set[str] = ORG_ADMIN_ROLES | {
     Role.TECNICO.value,
 }
 
+# Roles de STAFF de tickets (acceso a colas, datos internos, edición y cierre).
+# Se define EXPLÍCITAMENTE por rol, NO por role_priority: rrhh y tecnico comparten
+# nivel numérico (30), pero rrhh NO es soporte y no debe obtener privilegios de staff
+# por su valor numérico. Incluye técnicos, supervisores, responsables (manager),
+# company_admin y administradores de org/plataforma. EXCLUYE rrhh y usuario.
+TICKET_STAFF_ROLES: Set[str] = ORG_ADMIN_ROLES | {
+    Role.COMPANY_ADMIN.value,
+    Role.MANAGER.value,
+    Role.SUPERVISOR.value,
+    Role.TECNICO.value,
+}
+
+# Roles que pueden ASIGNAR/reasignar el técnico de un ticket (supervisor y superiores,
+# también explícito; rrhh/usuario/tecnico no asignan a otros —el técnico se autoasigna).
+TICKET_ASSIGN_ROLES: Set[str] = ORG_ADMIN_ROLES | {
+    Role.COMPANY_ADMIN.value,
+    Role.MANAGER.value,
+    Role.SUPERVISOR.value,
+}
+
 # Roles que pueden dar de baja usuarios
 USER_LIFECYCLE_ROLES: Set[str] = ORG_ADMIN_ROLES | {
     Role.RRHH.value,
+}
+
+# Roles que pueden GESTIONAR usuarios (listar/editar/rol/estado). company_admin
+# gestiona dentro de SU empresa; org_admin+ y plataforma en su alcance.
+USER_MANAGEMENT_ROLES: Set[str] = ORG_ADMIN_ROLES | {
+    Role.COMPANY_ADMIN.value,
+}
+
+# Conjunto COMPLETO de roles válidos (incluye legacy). Se usa para validar el
+# rol destino en cambios y para no aceptar valores arbitrarios del cliente.
+ALL_ROLES: Set[str] = {
+    Role.PLATFORM_OWNER.value, Role.PLATFORM_ADMIN.value,
+    Role.ORG_OWNER.value, Role.ORG_ADMIN.value, Role.COMPANY_ADMIN.value,
+    Role.MANAGER.value, Role.SUPERVISOR.value, Role.TECNICO.value,
+    Role.RRHH.value, Role.USUARIO.value,
+    Role.SUPERADMIN.value, Role.ADMIN.value,   # legacy
+}
+
+# Roles de plataforma propiamente dichos (owners de Ommeganet).
+PLATFORM_OWNER_ROLES: Set[str] = {
+    Role.PLATFORM_OWNER.value,
+    Role.SUPERADMIN.value,  # legacy equivalente
 }
 
 # Roles con acceso al vault (zero-knowledge)
@@ -100,6 +142,21 @@ def can_manage_assets(role: str) -> bool:
 def can_baja_user(role: str) -> bool:
     """¿Puede dar de baja usuarios?"""
     return role in USER_LIFECYCLE_ROLES
+
+
+def can_manage_users(role: str) -> bool:
+    """¿Puede gestionar usuarios (listar/editar/rol/estado)?"""
+    return role in USER_MANAGEMENT_ROLES
+
+
+def is_platform_owner(role: str) -> bool:
+    """¿Es un owner de plataforma (acceso total / protegido)?"""
+    return role in PLATFORM_OWNER_ROLES
+
+
+def is_valid_role(role: str) -> bool:
+    """¿El rol es uno de los válidos (incluye legacy)? Evita aceptar valores arbitrarios."""
+    return role in ALL_ROLES
 
 
 def can_access_vault(role: str) -> bool:
@@ -142,14 +199,15 @@ def is_company_scoped_role(role: str) -> bool:
 
 
 def can_staff_tickets(role: str) -> bool:
-    """
-    ¿Puede operar sobre tickets de toda su organización (no solo los propios)?
-    Técnico y superiores. Reemplaza a los chequeos legacy hardcodeados
-    (p.ej. role in ("admin","supervisor","tecnico")) por la jerarquía real.
-    """
-    return role_priority(role) >= role_priority(Role.TECNICO.value)
+    """¿Es STAFF de tickets (colas, datos internos, edición, cierre)?
+
+    Definido por ROL EXPLÍCITO (TICKET_STAFF_ROLES), NO por role_priority: rrhh
+    comparte nivel numérico con tecnico (30) pero NO es soporte y queda EXCLUIDO.
+    rrhh conserva el acceso personal a SUS propios tickets por otras vías."""
+    return role in TICKET_STAFF_ROLES
 
 
 def can_assign_tickets(role: str) -> bool:
-    """¿Puede asignar/reasignar el técnico de un ticket? Supervisor y superiores."""
-    return role_priority(role) >= role_priority(Role.SUPERVISOR.value)
+    """¿Puede asignar/reasignar el técnico de un ticket? Supervisor y superiores,
+    por rol explícito (TICKET_ASSIGN_ROLES). rrhh/usuario quedan excluidos."""
+    return role in TICKET_ASSIGN_ROLES

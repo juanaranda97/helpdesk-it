@@ -32,6 +32,11 @@ class Profile(Base):
     # usuario pertenezca a una org/empresa — p.ej. al asignar un activo).
     organization_id = Column(UUID(as_uuid=True))
     company_id = Column(UUID(as_uuid=True))
+    # Pertenencia estructurada (CORE-USERS-01): department_id reconcilia el texto
+    # legacy `department`. branch_id ya existe en la DB; se mapea para lectura/validación.
+    # `department_id` requiere la migración aditiva 0002 (ADD COLUMN IF NOT EXISTS).
+    branch_id = Column(UUID(as_uuid=True))
+    department_id = Column(UUID(as_uuid=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -382,3 +387,28 @@ class Department(Base):
     is_active = Column(Boolean, default=True)
     organization_id = Column(UUID(as_uuid=True))
     company_id = Column(UUID(as_uuid=True))
+
+
+class ProfileAuditLog(Base):
+    """Auditoría de cambios de perfil/rol/estado (CORE-USERS-01, R0-06).
+
+    Registra QUIÉN cambió QUÉ, en qué tenant, valor previo y nuevo, y el resultado.
+    NO se guardan secretos ni datos sensibles (ni contraseñas ni tokens): solo el
+    nombre del campo y sus valores de identidad/rol/estado. Tabla propia aditiva
+    (migración 0002), independiente del `cross_org_audit_log` de plataforma.
+    """
+    __tablename__ = "profile_audit_log"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    actor_id = Column(UUID(as_uuid=True))
+    actor_role = Column(String)
+    actor_organization_id = Column(UUID(as_uuid=True))
+    actor_company_id = Column(UUID(as_uuid=True))
+    target_user_id = Column(UUID(as_uuid=True))
+    target_organization_id = Column(UUID(as_uuid=True))
+    target_company_id = Column(UUID(as_uuid=True))
+    action = Column(String, nullable=False)          # update_profile | change_role | toggle_active
+    field = Column(String, nullable=False)           # full_name | role | is_active | department_id | ...
+    old_value = Column(Text)
+    new_value = Column(Text)
+    result = Column(String, nullable=False, default="ok")   # ok | denied
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

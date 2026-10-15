@@ -25,9 +25,14 @@ router = APIRouter(prefix="/tickets", tags=["Tickets"])
 
 
 def require_ticket_staff(ctx: TenancyContext = Depends(get_scoped_tenancy)) -> TenancyContext:
-    """Contexto + exige rol de staff de tickets (técnico y superiores)."""
+    """Contexto + exige rol de staff de tickets (técnico y superiores).
+
+    FAIL-CLOSED: un rol de staff acotado a empresa SIN empresa asignada NO obtiene
+    visibilidad de staff (listado/stats de toda la org); se corta con 403. Los
+    usuarios finales acceden a SUS tickets por otras rutas (no por staff)."""
     if not permissions.can_staff_tickets(ctx.role):
         raise HTTPException(status_code=403, detail="Requiere permisos de técnico o superior")
+    ctx.assert_company_scope()
     return ctx
 
 
@@ -42,11 +47,18 @@ def _get_ticket_or_404(db: Session, ticket_id: UUID, ctx: TenancyContext) -> Tic
 
 def _require_ticket_access(db: Session, ticket_id: UUID, ctx: TenancyContext) -> Ticket:
     """Tenant (404) + permiso funcional (403): solicitante, técnico asignado o staff.
-    Misma regla que GET /tickets/{id}, reutilizada por comentarios y adjuntos."""
+    Misma regla que GET /tickets/{id}, reutilizada por comentarios y adjuntos.
+
+    El solicitante y el técnico asignado siempre acceden a SU ticket. El acceso por
+    PRIVILEGIO de staff es FAIL-CLOSED: un rol de staff acotado sin empresa no obtiene
+    acceso de staff a tickets de toda la organización (403)."""
     ticket = _get_ticket_or_404(db, ticket_id, ctx)
     uid = UUID(ctx.user_id)
-    if ticket.requester_id != uid and ticket.assigned_to != uid and not permissions.can_staff_tickets(ctx.role):
+    if ticket.requester_id == uid or ticket.assigned_to == uid:
+        return ticket
+    if not permissions.can_staff_tickets(ctx.role):
         raise HTTPException(status_code=403, detail="Sin permiso para este ticket")
+    ctx.assert_company_scope()   # staff sin empresa: fail-closed
     return ticket
 
 
@@ -222,8 +234,11 @@ async def add_comment(
     ctx: TenancyContext = Depends(get_scoped_tenancy),
 ):
     ticket = _require_ticket_access(db, ticket_id, ctx)
-    # Un usuario sin rol de staff NO puede crear comentarios internos.
-    if data.is_internal and not permissions.can_staff_tickets(ctx.role):
+    # Comentario INTERNO = operación privilegiada de staff: requiere rol de staff Y
+    # alcance de empresa. Un staff acotado sin empresa (aunque sea solicitante/asignado)
+    # NO puede crear comentarios internos.
+    staff_privilege = permissions.can_staff_tickets(ctx.role) and not ctx.missing_required_company
+    if data.is_internal and not staff_privilege:
         raise HTTPException(status_code=403, detail="No tenés permiso para crear comentarios internos")
     comment = TicketComment(
         ticket_id=ticket_id,
@@ -249,8 +264,10 @@ async def list_comments(
 ):
     _require_ticket_access(db, ticket_id, ctx)
     query = db.query(TicketComment).filter(TicketComment.ticket_id == ticket_id)
-    # Usuarios sin rol de staff no ven comentarios internos.
-    if not permissions.can_staff_tickets(ctx.role):
+    # Los comentarios internos son visibles solo con PRIVILEGIO de staff (rol de staff
+    # + alcance de empresa). Un staff acotado sin empresa no los ve.
+    staff_privilege = permissions.can_staff_tickets(ctx.role) and not ctx.missing_required_company
+    if not staff_privilege:
         query = query.filter(TicketComment.is_internal == False)  # noqa: E712
     return query.order_by(TicketComment.created_at).all()
 
